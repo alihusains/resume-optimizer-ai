@@ -1,0 +1,47 @@
+api:
+  api_key: dummy
+  base_url: http://127.0.0.1:9090/v1
+  # model: auto-detect from API (or specify manually like: model.gguf)
+app:
+  description: Optimize your resume with AI-powered ATS scoring and keyword research
+  title: AI Resume Optimizer
+ats:
+  excellent_score: 95
+  good_score: 85
+  minimum_score: 70
+cover_letter:
+  default_length: medium
+  include_research: true
+keywords:
+  cache_file: keyword_cache.json
+  defaults:
+    product_manager:
+    - product roadmap
+    - stakeholder management
+    - roadmap planning
+    - user research
+    - data-driven decisions
+    - OKR
+    - KPI
+    - agile
+    - scrum
+    - MVP
+    software_engineer:
+    - software development
+    - agile
+    - code review
+    - CI/CD
+    - system design
+    - debugging
+    - testing
+    - api development
+paths:
+  cache_dir: .cache
+  output_dir: output
+  templates_dir: templates
+pdf:
+  default_template: modern
+  templates:
+  - modern
+  - classic
+  - ' ATS-friendly'

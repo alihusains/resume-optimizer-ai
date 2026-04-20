@@ -1,0 +1,26 @@
+# Resume Optimizer - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Web Framework
+streamlit>=1.28.0
+
+# PDF Generation
+reportlab>=4.0.0
+pypdf>=3.0.0
+pdfplumber>=0.10.0
+
+# Document Parsing
+python-docx>=0.8.11
+
+# Data Handling
+pyyaml>=6.0
+python-dotenv>=1.0.0
+
+# HTTP Requests
+requests>=2.31.0
+
+# OpenAI Client
+openai>=1.10.0
+
+# Utilities
+python-dateutil>=2.8.2
