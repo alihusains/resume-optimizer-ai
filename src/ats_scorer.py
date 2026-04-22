@@ -1,11 +1,17 @@
 """
-ATS Scoring Module - Advanced Professional Edition
-Implements a strict scoring framework and critical AI-powered evaluation.
+ATS Scoring Module - Hybrid Architecture (Rules + LLM)
+
+Architecture:
+    PDF -> Text Extraction -> Rule Engine (Python) -> LLM Critique -> Score Validator -> Output
+
+The Rule Engine handles ALL scoring, counting, and classification.
+The LLM is restricted to: explain, critique, rewrite, keyword analysis, role alignment.
 """
 
 import json
 import logging
 import os
+import sys
 from typing import Dict, Any, Optional, List
 
 # Configure logging
@@ -21,17 +27,23 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(file_handler)
 
+# Import rule engine
+_rule_engine_paths = [
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "Resume Optimizations"),
+    "/Users/alihusainsorathiya/Documents/resume/Resume Optimizations",
+]
+for _path in _rule_engine_paths:
+    if os.path.exists(_path) and _path not in sys.path:
+        sys.path.insert(0, _path)
+        break
+
+import rule_engine
+
+
 class ATSScorer:
     def __init__(self, llm_client: Any = None):
         self.llm_client = llm_client
         self.model = llm_client.get_model_name() if llm_client else "unknown"
-
-        self.strong_action_verbs = {
-            "led", "managed", "developed", "created", "implemented", "increased",
-            "reduced", "achieved", "delivered", "optimized", "orchestrated",
-            "spearheaded", "generated", "negotiated", "cultivated", "analyzed",
-            "formulated", "executed", "accelerated", "pioneered", "transformed"
-        }
 
     def score_all(
         self,
@@ -40,173 +52,124 @@ class ATSScorer:
         target_keywords: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
-        Run Deterministic ATS Resume Analysis with strict scoring framework.
+        Hybrid ATS Resume Analysis: Rule Engine + LLM Critique.
+
+        Step 1: Rule engine computes deterministic scores
+        Step 2: LLM provides critique, rewrites, keyword/role analysis
+        Step 3: Merge results and validate final scores
         """
-        # The AI now handles the entire deterministic scoring logic as per the new instructions
-        results = self._score_ai_powered(
-            optimized_resume, job_description, target_keywords or []
+        logger.info("--- START HYBRID ANALYSIS ---")
+
+        # STEP 1: Deterministic Rule Engine
+        logger.info("Step 1: Running deterministic rule engine...")
+        engine_result = rule_engine.analyze(optimized_resume)
+
+        logger.info(
+            f"Rule engine: {engine_result.total_bullets} bullets, "
+            f"metric_ratio={engine_result.metric_ratio}, "
+            f"classification={engine_result.bullet_classification}"
         )
 
-        # Add overall summary for compatibility with existing UI expectations
-        if "scores" in results and not results.get("error"):
-            overall_score = results["scores"].get("overall_score", 0)
-            results["overall"] = {
-                "score": overall_score,
-                "grade": self._get_grade(overall_score),
-                "breakdown": {
-                    "ATS Compatibility": results["scores"].get("ats_compatibility", 0),
-                    "Content Impact": results["scores"].get("content_impact", 0),
-                    "Readability": results["scores"].get("readability", 0),
-                    "Keywords": results["scores"].get("keyword_strength", 0),
-                    "Role Alignment": results["scores"].get("role_alignment", 0)
-                }
-            }
-            # Roadmap mapping
-            results["roadmap"] = [rec.get("issue") for rec in results.get("recommendations", [])]
+        # STEP 2: LLM Critique (scores are pre-computed, LLM only explains/rewrites)
+        logger.info("Step 2: Running LLM critique...")
+        llm_result = self._get_llm_critique(engine_result, job_description, target_keywords or [])
 
-        results["raw_text"] = optimized_resume
-        return results
+        # STEP 3: Merge deterministic scores with LLM insights
+        logger.info("Step 3: Merging results and validating...")
+        merged = self._merge_results(engine_result, llm_result)
 
-    def _score_ai_powered(
+        merged["raw_text"] = optimized_resume
+        return merged
+
+    def _get_llm_critique(
         self,
-        optimized_resume: str,
-        job_description: Optional[str] = None,
-        target_keywords: Optional[List[str]] = None,
+        engine_result: rule_engine.RuleEngineResult,
+        job_description: Optional[str],
+        target_keywords: List[str],
     ) -> Dict[str, Any]:
-        """Deterministic ATS Resume Evaluation Engine."""
-        logger.info(f"--- START DETERMINISTIC AI AUDIT ---")
+        """
+        LLM role: Resume Critic + Rewriter, NOT Score Calculator.
 
-        try:
-            prompt = f"""You are a deterministic ATS Resume Evaluation Engine.
+        The LLM receives pre-computed structured data and provides:
+        - Keyword analysis (requires domain knowledge)
+        - Role alignment assessment
+        - Mistake explanations
+        - Bullet rewrites
+        - Recommendations
+        """
+        if not self.llm_client:
+            return {"error": "No LLM client available"}
 
-Your task is to evaluate resumes extracted from PDF files with strict, rule-based scoring that simulates real ATS systems and experienced recruiters.
+        # Build weak bullets list for rewrite requests
+        weak_bullets = [
+            ba.text for ba in engine_result.bullet_analyses
+            if ba.classification == "weak"
+        ][:8]  # Cap at 8 to avoid prompt bloat
 
-You MUST:
-- Be strict and critical (do not inflate scores)
-- Penalize heavily for missing metrics, weak bullets, and poor structure
-- Quantify everything wherever possible
-- Ensure scores match the analysis logically
+        # Build the structured input for LLM
+        structured_input = json.dumps({
+            "bullets": engine_result.bullets[:20],  # Cap for token efficiency
+            "bullet_classification": engine_result.bullet_classification,
+            "metric_ratio": engine_result.metric_ratio,
+            "total_bullets": engine_result.total_bullets,
+            "bullets_with_metrics": engine_result.bullets_with_metrics,
+            "weak_verb_count": engine_result.weak_verb_count,
+            "ats_issues": engine_result.ats_issues,
+            "sections_found": engine_result.section_headers_found,
+            "sections_missing": engine_result.section_headers_missing,
+            "deterministic_scores": engine_result.scores,
+            "weak_bullets_to_rewrite": weak_bullets,
+        }, indent=2)
 
----
+        prompt = f"""You are a strict resume evaluator.
 
-# INPUT
+IMPORTANT:
+- You DO NOT calculate scores
+- Scores are already computed externally by a deterministic rule engine
+- Your job is to EXPLAIN, CRITIQUE, and IMPROVE
 
-RESUME TEXT:
-{optimized_resume}
-
-TARGET ROLE/JD (IF PROVIDED):
-{job_description if job_description else "Infer from content"}
-
-TARGET KEYWORDS (IF PROVIDED):
-{', '.join(target_keywords) if target_keywords else "None specified"}
-
----
-
-# SCORING MODEL (MANDATORY)
-
-You MUST calculate scores using the formulas below.
-
----
-
-## 1. ATS COMPATIBILITY (0–100) — Weight: 25%
-
-Start at 100. Deduct:
-- Tables / multi-column indicators: -20
-- Missing standard sections: -15 per missing section
-- Unclear section headings: -10
-- Special characters / icons: -10
-- Parsing ambiguity (merged text, broken bullets): -15
-- Header/footer interference: -10
-
-Minimum = 0
+You will receive structured data from a resume analysis system.
 
 ---
 
-## 2. CONTENT IMPACT (0–100) — Weight: 25%
+INPUT STRUCTURE:
 
-Let:
-- total_bullets = number of bullets in experience
-- bullets_with_metrics = bullets containing %, $, numbers, scale
-
-Metric Score:
-metric_ratio = bullets_with_metrics / total_bullets
-
-Scoring:
-- metric_ratio >= 0.6 → 90–100
-- 0.4–0.59 → 70–89
-- 0.2–0.39 → 40–69
-- < 0.2 → 0–39
-
-Then apply penalties:
-- Weak verbs (Responsible for, Worked on): -10
-- Repetition across bullets: -10
-- No measurable outcomes: -20
+{structured_input}
 
 ---
 
-## 3. READABILITY & STRUCTURE (0–100) — Weight: 20%
+TARGET ROLE/JD:
+{job_description if job_description else "Infer from the bullet content"}
 
-Start at 100. Deduct:
-- More than 5 bullets per role: -10
-- Inconsistent bullet formatting: -10
-- Long sentences (>25 words): -10
-- Poor spacing / dense text: -10
-- Verb tense inconsistency: -10
-- No clear section hierarchy: -15
+TARGET KEYWORDS:
+{', '.join(target_keywords) if target_keywords else "None specified — infer from content"}
 
 ---
 
-## 4. KEYWORD STRENGTH (0–100) — Weight: 15%
+YOUR TASK:
 
-Step 1: Infer role
-Step 2: Generate expected keyword set (minimum 15 keywords)
-Step 3:
-keyword_coverage = matched_keywords / expected_keywords
-
-Scoring:
-- >= 70% → 85–100
-- 50–69% → 70–84
-- 30–49% → 40–69
-- < 30% → 0–39
-
-Penalty:
-- Keyword stuffing detected: -15
+1. Infer the candidate's role, seniority, and years of experience
+2. Perform keyword analysis: identify 15+ expected keywords, which are present vs missing
+3. Assess role alignment (experience vs seniority, leadership signals, career progression)
+4. Critically evaluate the resume quality based on the pre-computed data
+5. Identify EXACT mistakes (not generic platitudes)
+6. Rewrite each weak bullet into a strong one using STAR/XYZ format
+7. Provide prioritized recommendations
 
 ---
 
-## 5. ROLE ALIGNMENT (0–100) — Weight: 15%
+STRICT RULES:
 
-Evaluate:
-- Years of experience vs seniority
-- Leadership signals
-- Career progression consistency
-
-Scoring:
-- Strong alignment: 80–100
-- Moderate: 60–79
-- Weak: 30–59
-- Poor/mismatch: <30
+- Be harsh and realistic
+- If metric_ratio < 0.3, clearly state the resume is weak
+- Do NOT praise unnecessarily
+- Do NOT repeat input data
+- Do NOT hallucinate experience the candidate doesn't have
+- Do NOT invent metrics — rewrites should use placeholder brackets like [X%]
 
 ---
 
-## FINAL SCORE
-
-Compute:
-overall_score = (ATS * 0.25) + (Impact * 0.25) + (Readability * 0.20) + (Keywords * 0.15) + (Role Alignment * 0.15)
-Round to nearest integer.
-
----
-
-# BULLET CLASSIFICATION (MANDATORY)
-
-For EACH bullet:
-- STRONG: Action verb + metric + outcome
-- MEDIUM: Action verb, no metric
-- WEAK: Generic responsibility / vague / no outcome
-
----
-
-# OUTPUT FORMAT (STRICT JSON ONLY)
+OUTPUT FORMAT (STRICT JSON ONLY):
 
 {{
   "candidate_summary": {{
@@ -214,15 +177,15 @@ For EACH bullet:
     "seniority_level": "",
     "years_of_experience": ""
   }},
-  "scores": {{
-    "overall_score": 0,
-    "ats_compatibility": 0,
-    "content_impact": 0,
-    "readability": 0,
-    "keyword_strength": 0,
-    "role_alignment": 0
+  "keyword_analysis": {{
+    "expected_keywords": [],
+    "present_keywords": [],
+    "missing_keywords": [],
+    "coverage_percentage": 0
   }},
-  "score_breakdown_explanation": {{
+  "role_alignment_score": 0,
+  "role_alignment_explanation": "",
+  "score_explanations": {{
     "ats_compatibility": "",
     "content_impact": "",
     "readability": "",
@@ -234,33 +197,11 @@ For EACH bullet:
     "major": [],
     "minor": []
   }},
-  "content_analysis": {{
-    "total_bullets": 0,
-    "bullets_with_metrics": 0,
-    "metric_ratio": 0,
-    "bullet_classification": {{
-      "strong": 0,
-      "medium": 0,
-      "weak": 0
-    }},
-    "weak_bullet_examples": [
-      {{
-        "original": "",
-        "improved": ""
-      }}
-    ]
-  }},
-  "keyword_analysis": {{
-    "expected_keywords": [],
-    "present_keywords": [],
-    "missing_keywords": [],
-    "coverage_percentage": 0
-  }},
-  "ats_issues": [
+  "bullet_improvements": [
     {{
+      "original": "",
       "issue": "",
-      "severity": "High | Medium | Low",
-      "impact": ""
+      "improved": ""
     }}
   ],
   "recommendations": [
@@ -273,34 +214,172 @@ For EACH bullet:
   ]
 }}"""
 
-            # Use chat interface of UniversalLLMClient
+        try:
             messages = [
-                {"role": "system", "content": "You are a senior executive recruiter and ATS expert. You provide objective, critical, and actionable feedback strictly in JSON format."},
-                {"role": "user", "content": prompt}
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a senior executive recruiter and ATS expert. "
+                        "Scores have already been calculated by a rule engine. "
+                        "Your role is critique, explanation, keyword analysis, and rewriting. "
+                        "Respond strictly in JSON format."
+                    ),
+                },
+                {"role": "user", "content": prompt},
             ]
             response = self.llm_client.chat(messages, temperature=0.1)
 
-            try:
-                # Clean response if LLM added markdown backticks
-                if "```json" in response:
-                    response = response.split("```json")[1].split("```")[0].strip()
-                elif "```" in response:
-                    response = response.split("```")[1].split("```")[0].strip()
+            # Clean markdown fences
+            if "```json" in response:
+                response = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                response = response.split("```")[1].split("```")[0].strip()
 
-                result = json.loads(response)
-                return result
-            except Exception as e:
-                logger.error(f"Failed to parse AI JSON: {e}. Raw response: {response[:500]}")
-                return {
-                    "error": "AI response parsing failed",
-                    "scores": {"overall_score": 0, "ats_compatibility": 0, "content_impact": 0, "readability": 0, "keyword_strength": 0, "role_alignment": 0}
-                }
+            return json.loads(response)
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse LLM JSON: {e}")
+            return self._fallback_llm_result()
         except Exception as e:
-            logger.error(f"AI Audit Error: {e}")
-            return {
-                "error": str(e),
-                "scores": {"overall_score": 0, "ats_compatibility": 0, "content_impact": 0, "readability": 0, "keyword_strength": 0, "role_alignment": 0}
-            }
+            logger.error(f"LLM critique error: {e}")
+            return self._fallback_llm_result()
+
+    def _merge_results(
+        self,
+        engine: rule_engine.RuleEngineResult,
+        llm: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Merge deterministic scores with LLM critique. Scores come from Python only."""
+
+        # Extract LLM-provided keyword and role scores
+        keyword_analysis = llm.get("keyword_analysis", {})
+        keyword_coverage = keyword_analysis.get("coverage_percentage", 50)
+
+        # Convert keyword coverage to score using deterministic brackets
+        if keyword_coverage >= 70:
+            keyword_score = min(100, 85 + int((keyword_coverage - 70) * 0.5))
+        elif keyword_coverage >= 50:
+            keyword_score = 70 + int((keyword_coverage - 50) * 0.7)
+        elif keyword_coverage >= 30:
+            keyword_score = 40 + int((keyword_coverage - 30) * 1.5)
+        else:
+            keyword_score = max(0, int(keyword_coverage * 1.3))
+
+        role_alignment_score = min(100, max(0, llm.get("role_alignment_score", 50)))
+
+        # Recompute overall with real keyword and role scores
+        overall_raw = int(
+            engine.scores["ats_compatibility"] * 0.25
+            + engine.scores["content_impact"] * 0.25
+            + engine.scores["readability"] * 0.20
+            + keyword_score * 0.15
+            + role_alignment_score * 0.15
+        )
+
+        # Validate final score
+        overall_validated = rule_engine.validate_score(
+            overall_raw, engine.metric_ratio, engine.bullet_classification
+        )
+
+        scores = {
+            "overall_score": overall_validated,
+            "ats_compatibility": engine.scores["ats_compatibility"],
+            "content_impact": engine.scores["content_impact"],
+            "readability": engine.scores["readability"],
+            "keyword_strength": keyword_score,
+            "role_alignment": role_alignment_score,
+        }
+
+        grade = self._get_grade(overall_validated)
+
+        # Build merged output
+        result: Dict[str, Any] = {
+            "candidate_summary": llm.get("candidate_summary", {
+                "inferred_role": "Unknown",
+                "seniority_level": "Unknown",
+                "years_of_experience": "N/A",
+            }),
+            "scores": scores,
+            "score_breakdown_explanation": llm.get("score_explanations", {}),
+            "mistakes": llm.get("mistakes", {"critical": [], "major": [], "minor": []}),
+            "content_analysis": {
+                "total_bullets": engine.total_bullets,
+                "bullets_with_metrics": engine.bullets_with_metrics,
+                "metric_ratio": engine.metric_ratio,
+                "bullet_classification": engine.bullet_classification,
+                "weak_bullet_examples": [
+                    {
+                        "original": bi.get("original", ""),
+                        "improved": bi.get("improved", ""),
+                        "issue": bi.get("issue", ""),
+                    }
+                    for bi in llm.get("bullet_improvements", [])
+                ],
+            },
+            "keyword_analysis": keyword_analysis,
+            "ats_issues": engine.ats_issues,
+            "recommendations": llm.get("recommendations", []),
+            "overall": {
+                "score": overall_validated,
+                "grade": grade,
+                "breakdown": {
+                    "ATS Compatibility": scores["ats_compatibility"],
+                    "Content Impact": scores["content_impact"],
+                    "Readability": scores["readability"],
+                    "Keywords": scores["keyword_strength"],
+                    "Role Alignment": scores["role_alignment"],
+                },
+            },
+            "scoring_method": "hybrid",
+            "deterministic_fields": [
+                "ats_compatibility", "content_impact", "readability",
+                "total_bullets", "bullets_with_metrics", "metric_ratio",
+                "bullet_classification",
+            ],
+            "llm_fields": [
+                "keyword_strength", "role_alignment", "mistakes",
+                "bullet_improvements", "recommendations", "candidate_summary",
+            ],
+            "roadmap": [
+                rec.get("issue") for rec in llm.get("recommendations", [])
+            ],
+        }
+
+        logger.info(
+            f"Final score: {overall_validated} ({grade}) | "
+            f"metric_ratio={engine.metric_ratio} | "
+            f"method=hybrid"
+        )
+        return result
+
+    def _fallback_llm_result(self) -> Dict[str, Any]:
+        """Fallback when LLM fails — analysis still works with deterministic scores only."""
+        return {
+            "candidate_summary": {
+                "inferred_role": "Unknown (LLM unavailable)",
+                "seniority_level": "Unknown",
+                "years_of_experience": "N/A",
+            },
+            "keyword_analysis": {
+                "expected_keywords": [],
+                "present_keywords": [],
+                "missing_keywords": [],
+                "coverage_percentage": 50,
+            },
+            "role_alignment_score": 50,
+            "role_alignment_explanation": "LLM critique unavailable — using neutral score",
+            "score_explanations": {},
+            "mistakes": {"critical": [], "major": [], "minor": []},
+            "bullet_improvements": [],
+            "recommendations": [
+                {
+                    "priority": 1,
+                    "issue": "LLM critique failed",
+                    "fix": "Review scores manually — deterministic analysis is complete",
+                    "expected_impact": "N/A",
+                }
+            ],
+        }
 
     def _get_grade(self, score: float) -> str:
         if score >= 95: return "A++"
